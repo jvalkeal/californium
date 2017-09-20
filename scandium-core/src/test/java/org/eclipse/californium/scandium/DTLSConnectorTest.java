@@ -62,10 +62,13 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import org.eclipse.californium.elements.AddressEndpointContext;
 import org.eclipse.californium.elements.RawData;
 import org.eclipse.californium.elements.RawDataChannel;
+import org.eclipse.californium.elements.runner.RepeatingTestRunner;
 import org.eclipse.californium.elements.tcp.SimpleMessageCallback;
 import org.eclipse.californium.scandium.auth.PreSharedKeyIdentity;
 import org.eclipse.californium.scandium.auth.RawPublicKeyIdentity;
@@ -104,14 +107,17 @@ import org.eclipse.californium.scandium.dtls.SessionId;
 import org.eclipse.californium.scandium.dtls.cipher.CipherSuite;
 import org.eclipse.californium.scandium.dtls.pskstore.InMemoryPskStore;
 import org.eclipse.californium.scandium.dtls.pskstore.StaticPskStore;
+import org.eclipse.californium.scandium.rule.DtlsNetworkRule;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
+import org.junit.ClassRule;
 import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+import org.junit.runner.RunWith;
 
 import eu.javaspecialists.tjsn.concurrency.stripedexecutor.StripedExecutorService;
 
@@ -120,8 +126,13 @@ import eu.javaspecialists.tjsn.concurrency.stripedexecutor.StripedExecutorServic
  * <p>
  * Mainly contains integration test cases verifying the correct interaction between a client and a server.
  */
+@RunWith(RepeatingTestRunner.class)
 @Category(Medium.class)
 public class DTLSConnectorTest {
+	@ClassRule
+	public static DtlsNetworkRule network = new DtlsNetworkRule(DtlsNetworkRule.Mode.DIRECT, DtlsNetworkRule.Mode.NATIVE);
+	
+	private static final Logger LOGGER = Logger.getLogger(DTLSConnectorTest.class.getCanonicalName());
 
 	private static final int CLIENT_CONNECTION_STORE_CAPACITY = 5;
 	private static final int SERVER_CONNECTION_STORE_CAPACITY = 2;
@@ -129,7 +140,7 @@ public class DTLSConnectorTest {
 	private static final int IPV6_MIN_MTU = 1280;
 	private static final String CLIENT_IDENTITY = "Client_identity";
 	private static final String CLIENT_IDENTITY_SECRET = "secretPSK";
-	private static final int MAX_TIME_TO_WAIT_SECS = 2;
+	private static final int MAX_TIME_TO_WAIT_SECS = 5;
 
 	private static DtlsConnectorConfig serverConfig;
 	private static DTLSConnector server;
@@ -330,7 +341,7 @@ public class DTLSConnectorTest {
 	@Test
 	public void testRetransmission() throws Exception {
 		// Configure UDP connector
-		RecordCollectorDataHandler collector = new RecordCollectorDataHandler();
+		RecordCollectorDataHandler collector = new RecordCollectorDataHandler("client");
 		UdpConnector rawClient = new UdpConnector(clientEndpoint, collector, clientConfig);
 
 		try {
@@ -399,7 +410,7 @@ public class DTLSConnectorTest {
 	@Test
 	public void testNoRetransmissionIfMessageReceived() throws Exception {
 		// Configure UDP connector
-		RecordCollectorDataHandler collector = new RecordCollectorDataHandler();
+		RecordCollectorDataHandler collector = new RecordCollectorDataHandler("client");
 		UdpConnector rawClient = new UdpConnector(clientEndpoint, collector, clientConfig);
 
 		// Add latency to PSK store
@@ -654,7 +665,7 @@ public class DTLSConnectorTest {
 	@Test
 	public void testReceivingMessagesInBadOrderDuringHandshake() throws Exception {
 		// Configure and create UDP connector
-		RecordCollectorDataHandler collector = new RecordCollectorDataHandler();
+		RecordCollectorDataHandler collector = new RecordCollectorDataHandler("client");
 		UdpConnector rawClient = new UdpConnector(clientEndpoint, collector, clientConfig);
 		try {
 
@@ -717,7 +728,7 @@ public class DTLSConnectorTest {
 	@Test
 	public void testServerFinishedMessageRetransmission() throws Exception {
 		// Configure and create UDP connector
-		RecordCollectorDataHandler collector = new RecordCollectorDataHandler();
+		RecordCollectorDataHandler collector = new RecordCollectorDataHandler("client");
 		UdpConnector rawClient = new UdpConnector(clientEndpoint, collector, clientConfig);
 		SimpleRecordLayer clientRecordLayer = new SimpleRecordLayer(rawClient);
 		try {
@@ -737,6 +748,7 @@ public class DTLSConnectorTest {
 			// Wait to receive response (should be HELLO VERIFY REQUEST, flight 2)
 			List<Record> rs = collector.waitForFlight(MAX_TIME_TO_WAIT_SECS, TimeUnit.SECONDS);
 			assertNotNull("timeout", rs); // check there is no timeout
+			assertThat(rs.size(),  is(1));
 			// Handle and answer (CLIENT HELLO with cookie, flight 3)
 			for (Record r : rs) {
 				clientHandshaker.processMessage(r);
@@ -745,6 +757,7 @@ public class DTLSConnectorTest {
 			// Wait for response (SERVER_HELLO, CERTIFICATE, ... , SERVER_DONE, flight 4)
 			rs = collector.waitForFlight(MAX_TIME_TO_WAIT_SECS, TimeUnit.SECONDS);
 			assertNotNull("timeout", rs);
+			assertThat(rs.size(),  is(5));
 			// Handle and answer (CERTIFICATE, CHANGE CIPHER SPEC, ..., FINISHED, flight 5)
 			for (Record r : rs) {
 				clientHandshaker.processMessage(r);
@@ -753,6 +766,7 @@ public class DTLSConnectorTest {
 			// Wait to receive response from server (should be CHANGE CIPHER SPEC, FINISHED, flight 6)
 			List<Record> drops = collector.waitForFlight(MAX_TIME_TO_WAIT_SECS, TimeUnit.SECONDS);
 			assertNotNull("timeout", drops);
+			assertThat(drops.size(),  is(2));
 			// Ignore the receive response, client resends flight 5
 			clientRecordLayer.resendLastFlight();
 
@@ -786,7 +800,7 @@ public class DTLSConnectorTest {
 	@Test
 	public void testResumeClientFinishedMessageRetransmission() throws Exception {
 		// Configure UDP connector we will use as Server
-		RecordCollectorDataHandler collector = new RecordCollectorDataHandler();
+		RecordCollectorDataHandler collector = new RecordCollectorDataHandler("server");
 		UdpConnector rawServer = new UdpConnector(new InetSocketAddress(0), collector, serverConfig);
 		SimpleRecordLayer serverRecordLayer = new SimpleRecordLayer(rawServer);
 
@@ -869,7 +883,6 @@ public class DTLSConnectorTest {
 			// ("application data" doesn't belong to flight)
 			rs = collector.waitForFlight(MAX_TIME_TO_WAIT_SECS, TimeUnit.SECONDS);
 			assertNotNull("timeout", rs);
-			assertEquals(2, rs.size());
 			assertFlightRecordsRetransmitted(drops, rs);
 			for (Record r : rs) {
 				resumingServerHandshaker.processMessage(r);
@@ -893,7 +906,7 @@ public class DTLSConnectorTest {
 	@Test
 	public void testFinishedMessageRetransmission() throws Exception {
 		// Configure UDP connector we will use as Server
-		RecordCollectorDataHandler collector = new RecordCollectorDataHandler();
+		RecordCollectorDataHandler collector = new RecordCollectorDataHandler("server");
 		UdpConnector rawServer = new UdpConnector(new InetSocketAddress(0), collector, serverConfig);
 
 		try {
@@ -918,7 +931,8 @@ public class DTLSConnectorTest {
 			// Wait to receive response (should be CLIENT HELLO, flight 3)
 			List<Record> rs = collector.waitForFlight(MAX_TIME_TO_WAIT_SECS, TimeUnit.SECONDS);
 			assertNotNull("timeout", rs); // check there is no timeout
-			// Handle and answer (should be CERTIFICATE, ... SERVER HELLO DONE, flight 4)
+			assertThat(rs.size(), is(1));
+			// Handle and answer (should be SERVER_HELLO, CERTIFICATE, ... SERVER HELLO DONE, flight 4)
 			for (Record r : rs) {
 				serverHandshaker.processMessage(r);
 			}
@@ -926,6 +940,7 @@ public class DTLSConnectorTest {
 			// Ignore transmission (CERTIFICATE, ... , FINISHED, flight 5)
 			List<Record> drops = collector.waitForFlight(MAX_TIME_TO_WAIT_SECS, TimeUnit.SECONDS);
 			assertNotNull("timeout", drops);
+			assertThat(drops.size(), is(5));
 
 			// Wait for retransmission (CERTIFICATE, ... , FINISHED, flight 5)
 			rs = collector.waitForFlight(MAX_TIME_TO_WAIT_SECS, TimeUnit.SECONDS);
@@ -958,7 +973,7 @@ public class DTLSConnectorTest {
 	@Test
 	public void testResumeFinishedMessageRetransmission() throws Exception {
 		// Configure and create UDP connector
-		RecordCollectorDataHandler collector = new RecordCollectorDataHandler();
+		RecordCollectorDataHandler collector = new RecordCollectorDataHandler("client");
 		UdpConnector rawClient = new UdpConnector(clientEndpoint, collector, clientConfig);
 		SimpleRecordLayer clientRecordLayer = new SimpleRecordLayer(rawClient);
 		DTLSSession clientSession = new DTLSSession(serverEndpoint, true);
@@ -1033,7 +1048,6 @@ public class DTLSConnectorTest {
 			// drop it, force retransmission (should be SERVER_HELLO, CHANGE CIPHER SPEC, FINISHED, fight 2)
 			rs = collector.waitForFlight(MAX_TIME_TO_WAIT_SECS, TimeUnit.SECONDS);
 			assertNotNull("timeout", rs); // check there is no timeout
-			assertEquals(3, rs.size());
 			assertFlightRecordsRetransmitted(drops, rs);
 			// Handle and answer ( CHANGE CIPHER SPEC, FINISHED, flight 3)
 			for (Record r : rs) {
@@ -1513,18 +1527,33 @@ public class DTLSConnectorTest {
 	}
 
 	private void assertFlightRecordsRetransmitted(final List<Record> flight1, final List<Record> flight2) {
-
-		// assert that flights contains the same number of records.
-		assertThat("retransmitted flight has different number of records", flight2.size(), is(flight1.size()));
-		for (int index=0; index < flight1.size(); ++index) {
-			Record record1 = flight1.get(index);
-			Record record2 = flight2.get(index);
-			assertThat("retransmitted flight record has different epoch", record2.getEpoch(), is(record1.getEpoch()));
-			assertThat("retransmitted flight record has different type", record2.getType(), is(record1.getType()));
-			assertThat("retransmitted flight record has no newer seqn", record2.getSequenceNumber(), is(greaterThan(record1.getSequenceNumber())));
+		int index = 0;
+		try {
+			// assert that flights contains the same number of records.
+			int maxCompareIndex = flight1.size() < flight2.size() ? flight1.size() : flight2.size();
+			for (; index < maxCompareIndex; ++index) {
+				Record record1 = flight1.get(index);
+				Record record2 = flight2.get(index);
+				assertThat("retransmitted flight record [" + index + "] has different epoch", record2.getEpoch(),
+						is(record1.getEpoch()));
+				assertThat("retransmitted flight record [" + index + "] has different type", record2.getType(), is(record1.getType()));
+				assertThat("retransmitted flight record [" + index + "] has no newer seqn", record2.getSequenceNumber(),
+						is(greaterThan(record1.getSequenceNumber())));
+			}
+			assertThat("retransmitted flight has different number of records", flight2.size(), is(flight1.size()));
+		} catch (AssertionError error) {
+			dumpFlight("expected", flight1, index);
+			dumpFlight("re-received", flight2, index);
+			throw error;
 		}
 	}
 
+	private void dumpFlight(String message, final List<Record> flight, int index) {
+		for (; index < flight.size(); ++index) {
+			LOGGER.severe(message + " [" +index + "]" + System.lineSeparator() + flight.get(index));
+		}
+	}
+	
 	@Test
 	public void testGetMaximumTransmissionUnitReturnsDefaultValue() {
 		// given a connector that has not been started yet
@@ -1641,8 +1670,13 @@ public class DTLSConnectorTest {
 
 	private class RecordCollectorDataHandler implements DataHandler {
 
-		private BlockingQueue<List<Record>> records = new LinkedBlockingQueue<>();
+		private final String description;
+		private final BlockingQueue<List<Record>> records = new LinkedBlockingQueue<>();
 
+		public RecordCollectorDataHandler(String description) {
+			this.description = description;
+		}
+		
 		@Override
 		public void handleData(byte[] data) {
 			try {
@@ -1656,13 +1690,21 @@ public class DTLSConnectorTest {
 		}
 
 		public List<Record> waitForFlight(long timeout, TimeUnit unit) throws InterruptedException {
+			List<Record> next;
 			List<Record> received = waitForRecords(timeout, unit);
 			if (null != received) {
 				received = new ArrayList<Record>(received);
-				List<Record> next;
-				if (null != (next = waitForRecords(200, TimeUnit.MILLISECONDS))) {
+				next = waitForRecords(200, TimeUnit.MILLISECONDS);
+				if (null != next) {
+					LOGGER.log(Level.INFO, "{0} received {1} and {2} records", new Object[] { description, received.size(), next.size() });
 					received.addAll(next);
 				}
+				else {
+					LOGGER.log(Level.INFO, "{0} received {1} records", new Object[] { description, received.size() });
+				}
+			}
+			else {
+				LOGGER.log(Level.WARNING, "{0} received no records", description);
 			}
 			return received;
 		}

@@ -52,13 +52,13 @@ public class DTLSFlight {
 	private final List<Record> messages;
 
 	/** The peer's address. */
-	private InetSocketAddress peerAddress;
+	private volatile InetSocketAddress peerAddress;
 
 	/**
 	 * The current DTLS session with the peer. Needed to set the record sequence
 	 * number correctly when retransmitted.
 	 */
-	private DTLSSession session;
+	private volatile DTLSSession session;
 
 	/** The number of retransmissions. */
 	private int tries;
@@ -276,7 +276,16 @@ public class DTLSFlight {
 			this.retransmitTask = retransmitTask;
 		}
 	}
-
+	
+	/**
+	 * Check, if retransmission was cancelled.
+	 * 
+	 * @return {@code true}, if retransmission was cancelled, {@code false}, otherwise.
+	 */
+	public synchronized boolean isRetransmissionCanceled() {
+		return cancelled;
+	}
+	
 	/**
 	 * Sets new sequence numbers on the records contained in this flight.
 	 * 

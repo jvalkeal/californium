@@ -788,6 +788,10 @@ public class Record {
 		}
 	}
 
+	public byte[] getFragmentBytes() {
+		return fragmentBytes;
+	}
+
 	/**
 	 * Gets the object representation of this record's <em>DTLSPlaintext.fragment</em>.
 	 *  

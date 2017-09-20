@@ -349,15 +349,14 @@ public class DTLSConnector implements Connector {
 			this.hasInternalExecutor = true;
 		}
 		socket = new DatagramSocket(null);
-		// make it easier to stop/start a server consecutively without delays
-		if (config.isAddressReuseEnabled()) {
+		if (bindAddress.getPort() != 0 && config.isAddressReuseEnabled()) {
+			// make it easier to stop/start a server consecutively without delays
 			LOGGER.config("Enable address reuse for socket!");
 			socket.setReuseAddress(true);
 			if (!socket.getReuseAddress()) {
 				LOGGER.warning("Enable address reuse for socket failed!");
 			}
 		}
-		
 		socket.bind(bindAddress);
 		if (lastBindAddress != null && (!socket.getLocalAddress().equals(lastBindAddress.getAddress()) || socket.getLocalPort() != lastBindAddress.getPort())){
 			if (connectionStore instanceof ResumptionSupportingConnectionStore) {
@@ -1516,12 +1515,19 @@ public class DTLSConnector implements Connector {
 
 		// check if limit of retransmissions reached
 		if (flight.getTries() < max) {
-			LOGGER.log(Level.FINE, "Re-transmitting flight for [{0}], [{1}] retransmissions left",
-					new Object[]{flight.getPeerAddress(), max - flight.getTries() - 1});
+			LOGGER.log(Level.FINE, "Re-transmitting flight with {0} records for [{1}], [{2}] retransmissions left",
+					new Object[]{flight.getMessages().size(), flight.getPeerAddress(), max - flight.getTries() - 1});
 
 			try {
 				flight.incrementTries();
 				flight.setNewSequenceNumbers();
+				if (LOGGER.isLoggable(Level.FINE)) {
+					List<Record> messages = flight.getMessages();
+					for (int index = 0; index < messages.size(); ++index) {
+						LOGGER.log(Level.FINE, "Re-transmitting record[{0}] " + System.lineSeparator() + "{1}",
+								new Object[] { index, messages.get(index) });
+					}
+				}
 				sendFlight(flight);
 
 				// schedule next retransmission
@@ -1675,18 +1681,25 @@ public class DTLSConnector implements Connector {
 
 		@Override
 		public void run() {
-			executor.execute(new StripedRunnable() {
-
-				@Override
-				public Object getStripe() {
-					return flight.getPeerAddress();
-				}
-
-				@Override
-				public void run() {
-					handleTimeout(flight);
-				}
-			});
+			if (!flight.isRetransmissionCanceled()) {
+				LOGGER.log(Level.INFO, "Retransmission of {0} records for {1} triggered", new Object[]{ flight.getMessages().size(), flight.getPeerAddress()} );
+				executor.execute(new StripedRunnable() {
+	
+					@Override
+					public Object getStripe() {
+						LOGGER.log(Level.INFO, "Retransmission stripe");
+						return flight.getPeerAddress();
+					}
+	
+					@Override
+					public void run() {
+						if (!flight.isRetransmissionCanceled()) {
+							handleTimeout(flight);
+						}
+					}
+				});
+				LOGGER.log(Level.INFO, "Retransmission trigger scheduled");
+			}
 		}
 	}
 
